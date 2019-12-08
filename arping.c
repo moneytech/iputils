@@ -268,7 +268,7 @@ static int send_pack(struct run_state *ctl)
 	memcpy(p, &ctl->gdst, 4);
 	p += 4;
 
-	clock_gettime(CLOCK_MONOTONIC_RAW, &now);
+	clock_gettime(CLOCK_MONOTONIC, &now);
 	err = sendto(ctl->socketfd, buf, p - buf, 0, (struct sockaddr *)HE, sll_len(ah->ar_hln));
 	if (err == p - buf) {
 		ctl->last = now;
@@ -323,7 +323,7 @@ static int recv_pack(struct run_state *ctl, unsigned char *buf, ssize_t len,
 	unsigned char *p = (unsigned char *)(ah + 1);
 	struct in_addr src_ip, dst_ip;
 
-	clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+	clock_gettime(CLOCK_MONOTONIC, &ts);
 
 	/* Filter out wild packets */
 	if (FROM->sll_pkttype != PACKET_HOST &&
@@ -431,14 +431,14 @@ static int recv_pack(struct run_state *ctl, unsigned char *buf, ssize_t len,
 static int outgoing_device(struct run_state *const ctl, struct nlmsghdr *nh)
 {
 	struct rtmsg *rm = NLMSG_DATA(nh);
-	int len = RTM_PAYLOAD(nh);
+	size_t len = RTM_PAYLOAD(nh);
 	struct rtattr *ra;
 
 	if (nh->nlmsg_type != RTM_NEWROUTE) {
 		error(0, 0, "NETLINK new route message type");
 		return 1;
 	}
-	for (ra = RTM_RTA(rm); RTA_OK(ra, len); ra = RTA_NEXT(ra, len)) {
+	for (ra = RTM_RTA(rm); RTA_OK(ra, (unsigned short)len); ra = RTA_NEXT(ra, len)) {
 		if (ra->rta_type == RTA_OIF) {
 			int *oif = RTA_DATA(ra);
 			static char dev_name[IF_NAMESIZE];
@@ -689,7 +689,8 @@ static int event_loop(struct run_state *ctl)
 	uint64_t exp, total_expires = 1;
 
 	unsigned char packet[4096];
-	struct sockaddr_storage from = { 0 };
+	struct sockaddr_storage from;
+	memset(&from, 0, sizeof(from));
 	socklen_t addr_len = sizeof(from);
 
 	/* signalfd */
@@ -764,7 +765,8 @@ static int event_loop(struct run_state *ctl)
 					continue;
 				}
 				total_expires += exp;
-				if (0 < ctl->count && (uint64_t)ctl->count < total_expires) {
+				if ((0 < ctl->count && (uint64_t)ctl->count < total_expires) ||
+				    (ctl->quit_on_reply && ctl->timeout < (long)total_expires)) {
 					exit_loop = 1;
 					continue;
 				}
@@ -792,7 +794,11 @@ static int event_loop(struct run_state *ctl)
 	close(tfd);
 	freeifaddrs(ctl->ifa0);
 	rc |= finish(ctl);
-	rc |= !(ctl->brd_sent != ctl->received);
+	if (ctl->dad && ctl->quit_on_reply)
+		/* Duplicate address detection mode return value */
+		rc |= !(ctl->brd_sent != ctl->received);
+	else
+		rc |= (ctl->sent != ctl->received);
 	return rc;
 }
 
